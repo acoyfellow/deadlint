@@ -29,8 +29,10 @@
   "files": [
     "bin",
     "src",
+    "docs",
     "README.md",
     "CHANGELOG.md",
+    "CONCEPT.md",
     "LICENSE"
   ],
   "scripts": {

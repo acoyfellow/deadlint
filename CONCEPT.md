@@ -188,3 +188,13 @@ If you want to extend it, the obvious next checks (in order of leverage):
 
 Read `src/dead-rpc.ts` next. It's 200 lines and the comments explain the
 reasoning more than the code does. Welcome.
+
+---
+
+## Bonus: making it always-on
+
+If you want deadlint to fire on every `git push` from every repo on your
+machine — public, private, GitHub, GitLab, doesn't matter — set git's
+global `core.hooksPath` and drop a `pre-push` script there. See the
+"Always-on" section in the README. ~10 lines of bash, one-time setup,
+covers your whole career.

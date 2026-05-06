@@ -1,4 +1,12 @@
-# deadlint
+<p align="center">
+  <img src="./docs/img/banner.jpg" alt="deadlint — three skulls and ritual ornaments, block-printed in oxblood ink on cream paper" width="100%">
+</p>
+
+<h1 align="center">deadlint</h1>
+
+<p align="center"><em>Ruthlessly Eliminate the Dead.</em></p>
+
+---
 
 Find what `knip` and `oxlint` can't:
 
@@ -56,6 +64,69 @@ each line is a `file:line` you can click in most terminals to jump straight
 to the source. Exit code is `1` when findings are present, `0` when clean.
 
 That's the entire learning curve.
+
+---
+
+## Always-on — run on every push, every repo
+
+Make deadlint a personal safety net that fires automatically before any
+`git push`, on **every repo on your machine**, public or private,
+GitHub or GitLab. Git's `core.hooksPath` config lets you set one
+hook directory globally. No per-repo install, survives `git clone`.
+
+### One-time setup
+
+```bash
+# 1. Make deadlint available on PATH
+cd /path/to/deadlint
+npm link                # or: pnpm link --global
+
+# 2. Tell git to use a global hooks directory
+mkdir -p ~/.config/git/hooks
+git config --global core.hooksPath ~/.config/git/hooks
+
+# 3. Drop in a pre-push hook
+cat > ~/.config/git/hooks/pre-push <<'EOF'
+#!/usr/bin/env bash
+set -e
+
+# Skip if deadlint isn't installed
+command -v deadlint >/dev/null 2>&1 || exit 0
+
+# Skip non-TS repos
+[ -f tsconfig.json ] || [ -f apps/worker/tsconfig.json ] || exit 0
+
+echo "→ deadlint scan…"
+deadlint . --check dead-rpc || {
+  echo ""
+  echo "deadlint found dead RPC methods. Re-run 'deadlint .' to inspect."
+  echo "To bypass once: git push --no-verify"
+  exit 1
+}
+EOF
+
+chmod +x ~/.config/git/hooks/pre-push
+```
+
+That's it. Now every `git push` from any repo runs deadlint first.
+
+### Why `pre-push`, not `pre-commit`?
+
+`pre-commit` fires on every WIP save and slows you down. `pre-push` fires
+once when you actually try to share work — the right friction layer. The
+same hook fires whether you're pushing to GitLab, GitHub, or anywhere else;
+git doesn't care about the remote.
+
+### Caveats
+
+- **Repos with their own hooks** (`.husky/`, `lefthook.yml`) get bypassed
+  by `core.hooksPath`. If you need both, have your global hook `exec` the
+  repo-local one as a fallback.
+- **`--no-verify` bypasses hooks.** This is a personal safety net, not
+  enforcement. For hard guarantees, also wire deadlint into your CI
+  (`.gitlab-ci.yml` / `.github/workflows/ci.yml`).
+- **Speed.** `--check dead-rpc` only — clones is too slow for a push hook.
+  Run the full scan locally with `deadlint .` when you actually want it.
 
 ---
 
