@@ -137,6 +137,59 @@ test("exit code: nonzero when findings present", () => {
   assert.equal(exit, 1, "exit should be 1 when findings present");
 });
 
+// ── string-key dispatch (Agents SDK pattern) ──────────────────────────────
+
+test("dead-rpc: keeps methods alive that are reached via client.call(\"name\", ...)", () => {
+  const { findings } = runDeadlint(["--check", "dead-rpc"]);
+  const dead = findings.filter((f): f is DeadFinding => f.kind === "dead-rpc");
+  const names = new Set(dead.map((d) => `${d.className}.${d.methodName}`));
+  assert.ok(
+    !names.has("ServerDO.processViaCallApi"),
+    "processViaCallApi is reached via client.call(\"processViaCallApi\", ...) and must not be flagged dead",
+  );
+});
+
+test("dead-rpc: keeps methods alive that are reached only from .svelte companion files", () => {
+  const { findings } = runDeadlint(["--check", "dead-rpc"]);
+  const dead = findings.filter((f): f is DeadFinding => f.kind === "dead-rpc");
+  const names = new Set(dead.map((d) => `${d.className}.${d.methodName}`));
+  assert.ok(
+    !names.has("ServerDO.frontendOnlyMethod"),
+    "frontendOnlyMethod is reached from CallerComponent.svelte and must not be flagged dead",
+  );
+});
+
+// ── tsconfig exclude is honored ───────────────────────────────────────────
+
+test("clones (inline): does not scan files excluded by tsconfig", () => {
+  const { findings } = runDeadlint([
+    "--check",
+    "clones",
+    "--clones-engine",
+    "inline",
+    "--clone-min-lines",
+    "5",
+  ]);
+  const clones = findings.filter((f): f is CloneFinding => f.kind === "clone");
+  for (const c of clones) {
+    assert.ok(
+      !c.a.file.includes("/archive/") && !c.b.file.includes("/archive/"),
+      `clone references archive/ file (excluded by tsconfig): ${c.a.file} / ${c.b.file}`,
+    );
+  }
+});
+
+test("dead-rpc: does not scan files excluded by tsconfig", () => {
+  const { findings } = runDeadlint(["--check", "dead-rpc"]);
+  const dead = findings.filter((f): f is DeadFinding => f.kind === "dead-rpc");
+  for (const d of dead) {
+    assert.ok(
+      !d.file.includes("/archive/"),
+      `dead-rpc finding in archive/ file (excluded by tsconfig): ${d.file}`,
+    );
+  }
+});
+
 // ── similarity engine (only if installed; otherwise just verify graceful skip) ──
 
 test("clones (similarity): runs cleanly whether or not similarity-ts is installed", () => {

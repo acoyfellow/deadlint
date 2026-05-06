@@ -28,8 +28,69 @@
 // references outside the declaration itself.
 
 import { Node, Project, SyntaxKind, type ClassDeclaration, type MethodDeclaration } from "ts-morph";
-import { dirname } from "node:path";
+import { dirname, join, resolve, relative } from "node:path";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import type { DeadRpcFinding, RunOptions } from "./types.ts";
+
+// Extensions of companion files that may contain calls to TypeScript class
+// methods but aren't compiled as TypeScript. Scanned as plain text for the
+// token-grep pass only (Pattern A and Pattern B). We don't try to parse them.
+const COMPANION_EXTENSIONS = [".svelte", ".vue", ".astro", ".tsx", ".jsx", ".mts", ".cts"];
+
+// Directories we never descend into when collecting companion files. The
+// tsconfig handles TypeScript exclusion; this is a separate concern (we're
+// reading raw text from non-TS files).
+const COMPANION_SKIP_DIRS = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  ".svelte-kit",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".wrangler",
+  "coverage",
+  ".cache",
+]);
+
+/**
+ * Recursively collect companion (non-TS) source files under root that may
+ * reference TypeScript-defined methods via string-key dispatch. Returns
+ * absolute paths.
+ */
+function collectCompanionFiles(root: string): string[] {
+  const out: string[] = [];
+  const visit = (dir: string) => {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") && entry.name !== "." && entry.name !== "..") {
+        // Skip dot-files and dot-dirs except the ones we explicitly allow
+        // through (none currently). Avoids .git, .next, etc.
+        if (!COMPANION_SKIP_DIRS.has(entry.name)) {
+          // still check the explicit list above for non-dot dirs
+          if (entry.isDirectory() && entry.name.startsWith(".")) continue;
+        }
+      }
+      if (entry.isDirectory()) {
+        if (COMPANION_SKIP_DIRS.has(entry.name)) continue;
+        visit(join(dir, entry.name));
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (COMPANION_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) {
+        out.push(join(dir, entry.name));
+      }
+    }
+  };
+  visit(root);
+  return out;
+}
 
 const SKIP_METHOD_PREFIXES = ["_", "#"]; // private convention + private fields
 
@@ -166,20 +227,14 @@ function isInteresting(method: MethodDeclaration): boolean {
 }
 
 export async function findDeadRpcMethods(opts: RunOptions): Promise<DeadRpcFinding[]> {
+  // Trust the tsconfig: ts-morph loads exactly the files the project
+  // declares. We deliberately do NOT re-glob the filesystem — that would
+  // pull in directories the tsconfig has explicitly excluded (legacy
+  // trees, generated artifacts, etc.) and inflate findings with noise.
   const project = new Project({
     tsConfigFilePath: opts.tsconfigPath,
     skipAddingFilesFromTsConfig: false,
   });
-
-  // Make sure source files outside the tsconfig's include but inside rootPath
-  // are loaded for cross-file reference resolution. Belt-and-suspenders.
-  project.addSourceFilesAtPaths([
-    `${opts.rootPath}/**/*.ts`,
-    `!${opts.rootPath}/**/node_modules/**`,
-    `!${opts.rootPath}/**/dist/**`,
-    `!${opts.rootPath}/**/.wrangler/**`,
-    `!${opts.rootPath}/**/*.d.ts`,
-  ]);
 
   // ── Pass 1: collect every candidate method from boundary classes ──────────
   type Candidate = {
@@ -209,13 +264,25 @@ export async function findDeadRpcMethods(opts: RunOptions): Promise<DeadRpcFindi
   }
 
   // ── Pass 2: token-grep the corpus ONCE for every candidate name ───────────
-  // We build a single regex that ORs all candidate names, then walk every
-  // source file's text and count hits per name. This is O(files + names)
-  // rather than O(files * names).
+  // We build regexes that OR all candidate names, then walk every source
+  // file's text and count hits per name. This is O(files + names) rather
+  // than O(files * names).
   //
-  // Names in TOKEN_GREP_BLOCKLIST are excluded here: for those, the grep
-  // signal would be unreliable (every codebase has `.map(`, `.then(`, etc.)
-  // and we rely solely on the ts-morph language-service signal in pass 3.
+  // Two patterns are matched:
+  //
+  //   A) Direct dispatch:   .foo(   .foo<   ["foo"](   ['foo'](
+  //      Standard JS call syntax.
+  //
+  //   B) String-key dispatch via `.call("name", ...)` — the Agents SDK
+  //      pattern (frontend code uses `client.call("methodName", args)` to
+  //      reach a Durable Object's @callable() methods through the WebSocket
+  //      proxy). Without this, every method on every Agent looks dead from
+  //      inside the worker repo.
+  //
+  // Names in TOKEN_GREP_BLOCKLIST are excluded from BOTH patterns, since
+  // `.map(`, `.then(`, etc. would otherwise create universal false-keep-
+  // alives. For those names we trust only the ts-morph language-service
+  // signal in pass 3.
   const nameSet = new Set(
     candidates.map((c) => c.name).filter((n) => !TOKEN_GREP_BLOCKLIST.has(n)),
   );
@@ -223,20 +290,55 @@ export async function findDeadRpcMethods(opts: RunOptions): Promise<DeadRpcFindi
   for (const name of nameSet) callCounts.set(name, 0);
 
   if (nameSet.size > 0) {
-    // Match `.foo(`, `.foo<`, `["foo"](`. Declarations are bare identifiers
-    // (`name(` without leading dot), so they don't match — good.
     const escaped = [...nameSet].map(escapeRegExp).join("|");
-    const callRx = new RegExp(`(?:\\.|\\[[\"'])(${escaped})(?:[\"'\\]]?\\s*[(<])`, "g");
 
+    // Pattern A: `.foo(`, `.foo<`, `["foo"](`. Declarations (bare
+    // `name(`) are not matched because there's no leading `.` or `[`.
+    const directRx = new RegExp(
+      `(?:\\.|\\[[\"'])(${escaped})(?:[\"'\\]]?\\s*[(<])`,
+      "g",
+    );
+
+    // Pattern B: `.call("foo"`, `.call<T>("foo"`, `.call('foo'`. Tolerates
+    // whitespace so multi-line call expressions match, and an optional
+    // generic argument list (`<...>`) so TypeScript-generic call sites
+    // like `client.call<ReturnType>("method", ...)` are recognized.
+    const stringDispatchRx = new RegExp(
+      `\\.call(?:\\s*<[^>]*>)?\\s*\\(\\s*[\"'](${escaped})[\"']`,
+      "g",
+    );
+
+    const scanText = (text: string) => {
+      let m: RegExpExecArray | null;
+      directRx.lastIndex = 0;
+      while ((m = directRx.exec(text)) !== null) {
+        const hitName = m[1]!;
+        callCounts.set(hitName, (callCounts.get(hitName) ?? 0) + 1);
+      }
+      stringDispatchRx.lastIndex = 0;
+      while ((m = stringDispatchRx.exec(text)) !== null) {
+        const hitName = m[1]!;
+        callCounts.set(hitName, (callCounts.get(hitName) ?? 0) + 1);
+      }
+    };
+
+    // Pass 2a: TS source files loaded via tsconfig.
     for (const sf of project.getSourceFiles()) {
       const file = sf.getFilePath();
       if (!file.startsWith(opts.rootPath)) continue;
       if (file.endsWith(".d.ts")) continue;
-      const text = sf.getFullText();
-      let m: RegExpExecArray | null;
-      while ((m = callRx.exec(text)) !== null) {
-        const hitName = m[1]!;
-        callCounts.set(hitName, (callCounts.get(hitName) ?? 0) + 1);
+      scanText(sf.getFullText());
+    }
+
+    // Pass 2b: companion non-TS source files (.svelte, .vue, .tsx, ...).
+    // Frontend code commonly invokes Workers RPC methods from these files
+    // via `client.call("methodName", args)` — we'd flag every such method
+    // as dead without this. Read as text only; we do not try to parse them.
+    for (const file of collectCompanionFiles(opts.rootPath)) {
+      try {
+        scanText(readFileSync(file, "utf8"));
+      } catch {
+        // Unreadable files (perms, race) just contribute zero hits.
       }
     }
   }

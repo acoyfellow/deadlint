@@ -1,15 +1,17 @@
 // Fixture: a Durable Object with a mix of live and dead methods.
 //
 // Ground truth (used by tests):
-//   LIVE   ServerDO.readObject       — called via stub in caller.ts (.readObject()) and in test/server.test.ts
-//   LIVE   ServerDO.writeObject      — called by another method on this same class
-//   LIVE   ServerDO.handleEvent      — called via dynamic dispatch in caller.ts (["handleEvent"]())
-//   DEAD   ServerDO.deprecatedFlush  — defined, never called anywhere
-//   DEAD   ServerDO.legacyReset      — only referenced inside its own JSDoc; no callers
-//   DEAD   ServerDO.unusedHelperRpc  — present but no caller reaches it
-//   SKIP   ServerDO.fetch            — always-live (Worker entrypoint name)
-//   SKIP   ServerDO.alarm            — always-live (DO alarm hook name)
-//   SKIP   ServerDO.#privateField    — private, ignored
+//   LIVE   ServerDO.readObject         — called via stub in caller.ts (.readObject()) and in test/server.test.ts
+//   LIVE   ServerDO.writeObject        — called by another method on this same class
+//   LIVE   ServerDO.handleEvent        — called via dynamic dispatch in caller.ts (["handleEvent"]())
+//   LIVE   ServerDO.processViaCallApi  — called via client.call("processViaCallApi", ...) in caller.ts
+//                                          (Agents SDK string-key dispatch pattern)
+//   DEAD   ServerDO.deprecatedFlush    — defined, never called anywhere
+//   DEAD   ServerDO.legacyReset        — only referenced inside its own JSDoc; no callers
+//   DEAD   ServerDO.unusedHelperRpc    — present but no caller reaches it
+//   SKIP   ServerDO.fetch              — always-live (Worker entrypoint name)
+//   SKIP   ServerDO.alarm              — always-live (DO alarm hook name)
+//   SKIP   ServerDO.#privateField      — private, ignored
 
 import { DurableObject } from "./shims.ts";
 
@@ -28,6 +30,19 @@ export class ServerDO extends DurableObject {
   // LIVE — called via ["handleEvent"]() dynamic dispatch in caller.ts
   async handleEvent(name: string): Promise<void> {
     await this.writeObject(name, name);
+  }
+
+  // LIVE — called via client.call("processViaCallApi", ...) in caller.ts
+  // This exercises the Agents SDK string-key dispatch signal added in v0.0.1.
+  async processViaCallApi(payload: string): Promise<string> {
+    return payload.toUpperCase();
+  }
+
+  // LIVE — called from a .svelte companion file (CallerComponent.svelte).
+  // The TS project loader does not include .svelte files, but deadlint's
+  // companion-file scanner reads them as plain text for token-grep.
+  async frontendOnlyMethod(payload: string): Promise<string> {
+    return payload.split("").reverse().join("");
   }
 
   // DEAD — no caller anywhere

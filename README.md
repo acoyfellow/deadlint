@@ -87,13 +87,21 @@ Exit `0` = clean, `1` = findings, `2` = misconfig.
 
 **Dead RPC methods.** For every public method on a class extending
 `DurableObject`, `WorkerEntrypoint`, `WorkflowEntrypoint`, `RpcTarget`,
-or `Agent`, deadlint asks two questions: does the TypeScript language
-service see any references? And does a scoped token scan find any
-`.method(` / `["method"](` calls? Only methods with **zero hits from
-both signals** are flagged. Common stdlib names (`map`, `then`, `set`,
-…) are excluded from the token scan to avoid coincidental keep-alives.
-The Workers runtime hooks (`fetch`, `alarm`, `onConnect`, …) are
-allow-listed.
+or `Agent`, deadlint looks for callers across three signals:
+
+1. The TypeScript language service (precise — but blind to JSRPC stubs).
+2. A token scan for `.method(` / `["method"](` direct dispatch.
+3. A token scan for `.call("method", …)` string-key dispatch — the
+   Agents SDK pattern frontend code uses to reach DO methods through
+   the WebSocket proxy.
+
+Patterns 2 and 3 are scanned across both TypeScript files and companion
+files (`.svelte`, `.vue`, `.astro`, `.tsx`, `.jsx`) so frontend call
+sites that aren't compiled by your tsconfig are still seen. A method is
+flagged dead **only when all three signals turn up zero**. Common
+stdlib names (`map`, `then`, `set`, …) are excluded from the token
+scans to avoid coincidental keep-alives. Workers/Agents runtime hooks
+(`fetch`, `alarm`, `onConnect`, …) are allow-listed.
 
 Override the boundary class list with `--bases Foo,Bar`.
 
@@ -136,14 +144,21 @@ isn't deadlint-managed. You can't accidentally lose work.
 
 ## What it won't catch
 
-- Dynamically-named RPC: `stub[methodFromConfig]()`. Both signals miss it.
-- Cross-repo dead code. If your callers live elsewhere, deadlint sees nothing.
-- HTTP routes dispatched by URL path. Add the router class to `--bases`.
-- Behavioral clones with different control flow (the inline engine is
-  shape-based; the similarity engine helps but isn't magic).
+- Fully dynamic RPC: `stub[methodFromConfig]()` where the method name is
+  computed at runtime. None of the signals can see it.
+- Cross-repo dead code. If your callers live in a different repository,
+  deadlint sees nothing.
+- HTTP routes dispatched by URL path rather than method name. Add the
+  router class to `--bases` if appropriate.
+- Behavioral clones with different control flow. The inline engine is
+  shape-based; the similarity engine helps but isn't magic.
+- The `similarity` clone engine is an external Rust binary
+  (`similarity-ts`) that does its own file walk and does not read your
+  `tsconfig.json`. The `inline` engine and the dead-rpc check both
+  honor `tsconfig` includes/excludes.
 
-Findings are meant for human review. The tool biases toward false negatives —
-it would rather miss a dead method than wrongly flag a live one.
+Findings are meant for human review. The tool biases toward false
+negatives — it would rather miss a dead method than wrongly flag a live one.
 
 ## License
 

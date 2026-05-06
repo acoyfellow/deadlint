@@ -81,17 +81,12 @@ function symbolNameOf(fn: FnLike): string {
 }
 
 function collectBodies(opts: RunOptions): BodyEntry[] {
+  // Trust the tsconfig (see comment in dead-rpc.ts). The project's loaded
+  // source files are exactly what TypeScript itself would compile.
   const project = new Project({
     tsConfigFilePath: opts.tsconfigPath,
     skipAddingFilesFromTsConfig: false,
   });
-  project.addSourceFilesAtPaths([
-    `${opts.rootPath}/**/*.ts`,
-    `!${opts.rootPath}/**/node_modules/**`,
-    `!${opts.rootPath}/**/dist/**`,
-    `!${opts.rootPath}/**/.wrangler/**`,
-    `!${opts.rootPath}/**/*.d.ts`,
-  ]);
 
   const entries: BodyEntry[] = [];
 
