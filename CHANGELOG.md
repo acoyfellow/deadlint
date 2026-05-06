@@ -24,5 +24,11 @@ for why.
 - Always-live method allowlist (Workers/Agents lifecycle hooks).
 - Token-grep blocklist for stdlib method names (`map`, `then`, `set`, etc.) to
   prevent false-negatives where a class method shares a name with a built-in.
+- Global git pre-push hook installer (`deadlint --install-hook`,
+  `--uninstall-hook`, `--hook-status`). Sets `core.hooksPath` once; covers
+  every repo on the machine, public or private, GitLab or GitHub. Refuses to
+  clobber foreign hooks without `--force`.
+- Top-of-README "Where this sits on the linter stack" section explaining
+  the gap between `tsc` / `oxlint` / `knip` and deadlint.
 
 [0.0.1]: https://github.com/acoyfellow/deadlint/releases/tag/v0.0.1

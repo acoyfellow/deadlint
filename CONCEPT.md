@@ -5,6 +5,22 @@ what gap it fills, and the entire codebase well enough to extend it.
 
 ## Minute 1 — the gap
 
+deadlint is **the last layer of the linter stack**, not a replacement for
+anything. The stack, in the order you should add tools to a TypeScript
+codebase:
+
+```
+tsc --strict           → type errors, unused locals (within a function)
+oxlint / biome         → unused imports, unused private members (within a file)
+knip / ts-prune        → unused exports, unused files, unused deps (within a module)
+deadlint               → dead methods across RPC boundaries, structural clones
+```
+
+Each layer's blind spot is the next layer's job. None of them are
+redundant. deadlint exists because the boundary above it — public methods
+on a `DurableObject` or `WorkerEntrypoint` — is permanently invisible to
+everything else.
+
 Take this Cloudflare Worker:
 
 ```ts

@@ -1,6 +1,8 @@
 // CLI entry point. Parses args, dispatches to checks, prints report.
 import { existsSync, statSync } from "node:fs";
-import { resolve, join, isAbsolute } from "node:path";
+import { resolve, join, isAbsolute, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { findDeadRpcMethods } from "./dead-rpc.ts";
 import { findClonesSimilarity } from "./clones-similarity.ts";
 import { findClonesInline } from "./clones-inline.ts";
@@ -52,6 +54,12 @@ function parseArgs(argv: string[]): RunOptions {
       case "--json":
         json = true;
         break;
+      case "--install-hook":
+        process.exit(runInstallHook("install", args.slice(i + 1)));
+      case "--uninstall-hook":
+        process.exit(runInstallHook("uninstall", args.slice(i + 1)));
+      case "--hook-status":
+        process.exit(runInstallHook("status", []));
       case "-h":
       case "--help":
         printHelp();
@@ -115,6 +123,48 @@ function findTsconfig(root: string): string | undefined {
   return candidates.find(existsSync);
 }
 
+/**
+ * Resolve the path to the bundled install-hook.sh script.
+ * Works whether deadlint is run via `tsx src/cli.ts`, the `bin/deadlint.mjs`
+ * shim, or installed via `npm i -g`.
+ */
+function findInstallHookScript(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  // src/cli.ts -> ../scripts/install-hook.sh
+  const candidate = resolve(here, "..", "scripts", "install-hook.sh");
+  if (existsSync(candidate)) return candidate;
+  // Fallback for unusual installs: search from the package root.
+  const fallback = resolve(here, "scripts", "install-hook.sh");
+  return fallback;
+}
+
+/**
+ * Delegate to scripts/install-hook.sh. Returns the script's exit code.
+ */
+function runInstallHook(
+  cmd: "install" | "uninstall" | "status",
+  passthrough: string[],
+): number {
+  const script = findInstallHookScript();
+  if (!existsSync(script)) {
+    console.error(
+      `deadlint: hook installer script missing.\n` +
+        `Expected at: ${script}\n` +
+        `This usually means a broken install — try reinstalling deadlint.`,
+    );
+    return 2;
+  }
+  // Strip --force-style flags off passthrough so we don't accidentally
+  // forward unrelated deadlint flags. Only --force is meaningful for the
+  // hook installer.
+  const safeArgs = passthrough.filter((a) => a === "--force");
+  const r = spawnSync("bash", [script, cmd, ...safeArgs], {
+    stdio: "inherit",
+    env: process.env,
+  });
+  return r.status ?? 1;
+}
+
 function printHelp(): void {
   console.log(`deadlint — find dead cross-boundary code and structural clones
 
@@ -155,13 +205,20 @@ EXAMPLES
   deadlint ./my-worker --clones-engine both --clone-threshold 0.82
   deadlint ./my-worker --json > report.json
 
+GIT HOOK
+  --install-hook [--force]    Install a global pre-push hook that runs
+                              deadlint on every push from any repo on
+                              this machine. See README "Always-on" section.
+  --uninstall-hook            Remove the deadlint-managed pre-push hook.
+  --hook-status               Show whether the hook is currently installed.
+
 EXIT CODES
   0   no findings
   1   findings present (use --json to consume)
   2   misconfiguration (missing path, missing tsconfig, bad flag)
 
 DOCS
-  https://github.com/jcoeyman/deadlint
+  https://github.com/acoyfellow/deadlint
 `);
 }
 

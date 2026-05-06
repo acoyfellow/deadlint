@@ -29,6 +29,7 @@
   "files": [
     "bin",
     "src",
+    "scripts",
     "docs",
     "README.md",
     "CHANGELOG.md",
@@ -37,7 +38,7 @@
   ],
   "scripts": {
     "deadlint": "tsx src/cli.ts",
-    "test": "node --import tsx --test test/deadlint.test.ts",
+    "test": "node --import tsx --test test/deadlint.test.ts test/hook.test.ts",
     "typecheck": "tsc --noEmit",
     "ci": "pnpm typecheck && pnpm test"
   },

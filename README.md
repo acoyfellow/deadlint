@@ -8,7 +8,51 @@
 
 ---
 
-Find what `knip` and `oxlint` can't:
+## Where this sits on the linter stack
+
+deadlint is the **last layer**, not a replacement. Keep your existing tools.
+Add this on top.
+
+| Tool                            | What it catches                                        | Where it stops                                                                                       |
+| ------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `tsc` (`noUnusedLocals`)        | Unused local variables, unused params                  | Stops at the function boundary. Doesn't know about modules.                                          |
+| `oxlint` / `biome` / `eslint`   | Unused imports, unused private members, style rules   | Stops at the file/class boundary. Treats every `export` as live.                                     |
+| `knip` / `ts-prune`             | Unused exports, unused files, unused dependencies      | Stops at the **module export** boundary. Treats every public class member as part of the API.        |
+| **deadlint**                    | Dead public **methods on RPC boundary classes**, structural clones across the codebase | This is the gap. ↑                                                                                   |
+
+### Why this gap exists
+
+In a Cloudflare Workers / Agents codebase, every public method on a
+`DurableObject`, `WorkerEntrypoint`, `RpcTarget`, `Agent`, or
+`WorkflowEntrypoint` is — from a static-analysis perspective — an entry
+point. Anyone holding a stub could call it. So `knip` keeps every method
+alive, `oxlint` keeps every method alive, `tsc` keeps every method alive.
+
+Result: a real codebase accumulates dozens of public methods that nothing
+actually calls anymore, and no linter on Earth will tell you. They sit
+there forever. deadlint is the tool that walks the call graph (plus a
+targeted token scan) and tells you which ones are actually unreachable
+from anywhere in the repo.
+
+The clone check exists because once you're walking the AST anyway, finding
+near-duplicate function bodies is essentially free, and no off-the-shelf
+TypeScript linter does it either. That gap is filled by `jscpd` /
+`similarity-ts` / `PMD-CPD` as separate tools — deadlint just gives you a
+unified entry point.
+
+### The order to add tools to a fresh repo
+
+1. `tsc --strict` — type errors
+2. `oxlint` or `biome` — style + unused locals
+3. `knip` — unused exports, unused dependencies, dead files
+4. **deadlint** — dead RPC methods, structural clones
+
+Each layer catches what the previous one missed. None of them are
+redundant.
+
+---
+
+## What it does
 
 1. **Dead cross-boundary methods** — public methods on Workers
    `DurableObject` / `WorkerEntrypoint` / `RpcTarget` / `Agent` /
@@ -71,62 +115,64 @@ That's the entire learning curve.
 
 Make deadlint a personal safety net that fires automatically before any
 `git push`, on **every repo on your machine**, public or private,
-GitHub or GitLab. Git's `core.hooksPath` config lets you set one
-hook directory globally. No per-repo install, survives `git clone`.
+GitHub or GitLab. Git's `core.hooksPath` config lets you set one hook
+directory globally. No per-repo install, survives `git clone`.
 
-### One-time setup
+### One command
 
 ```bash
-# 1. Make deadlint available on PATH
-cd /path/to/deadlint
-npm link                # or: pnpm link --global
-
-# 2. Tell git to use a global hooks directory
-mkdir -p ~/.config/git/hooks
-git config --global core.hooksPath ~/.config/git/hooks
-
-# 3. Drop in a pre-push hook
-cat > ~/.config/git/hooks/pre-push <<'EOF'
-#!/usr/bin/env bash
-set -e
-
-# Skip if deadlint isn't installed
-command -v deadlint >/dev/null 2>&1 || exit 0
-
-# Skip non-TS repos
-[ -f tsconfig.json ] || [ -f apps/worker/tsconfig.json ] || exit 0
-
-echo "→ deadlint scan…"
-deadlint . --check dead-rpc || {
-  echo ""
-  echo "deadlint found dead RPC methods. Re-run 'deadlint .' to inspect."
-  echo "To bypass once: git push --no-verify"
-  exit 1
-}
-EOF
-
-chmod +x ~/.config/git/hooks/pre-push
+deadlint --install-hook
 ```
 
-That's it. Now every `git push` from any repo runs deadlint first.
+That's it. The installer:
+
+1. Creates `~/.config/git/hooks/` if it doesn't exist.
+2. Sets `git config --global core.hooksPath` to that directory.
+3. Writes a `pre-push` script that runs `deadlint . --check dead-rpc`
+   on the current repo before each push, and aborts the push on findings.
+
+The hook is **safe by design**: it skips non-TypeScript repos silently,
+exits cleanly if `deadlint` isn't on PATH, and refuses to clobber any
+pre-existing `pre-push` hook unless you pass `--force`.
+
+### Inspect / remove
+
+```bash
+deadlint --hook-status      # is it installed? where?
+deadlint --uninstall-hook   # remove it (only if we wrote it)
+```
+
+`--uninstall-hook` only removes hooks deadlint installed (verified via a
+header marker in the script). It will not delete a hook you put there
+yourself.
+
+### Bypass once
+
+```bash
+git push --no-verify
+```
+
+Standard git escape hatch.
 
 ### Why `pre-push`, not `pre-commit`?
 
-`pre-commit` fires on every WIP save and slows you down. `pre-push` fires
-once when you actually try to share work — the right friction layer. The
-same hook fires whether you're pushing to GitLab, GitHub, or anywhere else;
-git doesn't care about the remote.
+`pre-commit` fires on every WIP save and slows you down. `pre-push`
+fires once when you actually try to share work — the right friction
+layer. The same hook fires whether you're pushing to GitLab, GitHub, or
+anywhere else; git doesn't care about the remote.
 
 ### Caveats
 
-- **Repos with their own hooks** (`.husky/`, `lefthook.yml`) get bypassed
-  by `core.hooksPath`. If you need both, have your global hook `exec` the
-  repo-local one as a fallback.
+- **Repos with their own hooks** (`.husky/`, `lefthook.yml`) get
+  bypassed by `core.hooksPath`. If you need both, copy the hook to
+  `~/.config/git/hooks/pre-push.local` and remove the deadlint marker
+  line so it isn't re-managed; then have your custom hook `exec` it.
 - **`--no-verify` bypasses hooks.** This is a personal safety net, not
   enforcement. For hard guarantees, also wire deadlint into your CI
   (`.gitlab-ci.yml` / `.github/workflows/ci.yml`).
-- **Speed.** `--check dead-rpc` only — clones is too slow for a push hook.
-  Run the full scan locally with `deadlint .` when you actually want it.
+- **Speed.** The hook only runs `--check dead-rpc` (fast).
+  Clones detection is too slow for a push hook — run it manually with
+  `deadlint .` when you want the full scan.
 
 ---
 
