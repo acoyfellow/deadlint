@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+*.tsbuildinfo
+.tshy/
+.tshy-build/
+coverage/
+.idea/
+.vscode/

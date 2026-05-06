@@ -1,0 +1,53 @@
+{
+  "name": "deadlint",
+  "version": "0.0.1",
+  "description": "Find dead cross-boundary code (Workers DurableObject / RpcTarget / Agent methods) and structural clones in a TypeScript codebase.",
+  "keywords": [
+    "typescript",
+    "lint",
+    "dead-code",
+    "duplicate-code",
+    "cloudflare-workers",
+    "durable-objects",
+    "rpc",
+    "static-analysis"
+  ],
+  "homepage": "https://github.com/acoyfellow/deadlint#readme",
+  "bugs": {
+    "url": "https://github.com/acoyfellow/deadlint/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acoyfellow/deadlint.git"
+  },
+  "license": "MIT",
+  "author": "acoyfellow <coeyman@gmail.com>",
+  "type": "module",
+  "bin": {
+    "deadlint": "./bin/deadlint.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "deadlint": "tsx src/cli.ts",
+    "test": "node --import tsx --test test/deadlint.test.ts",
+    "typecheck": "tsc --noEmit",
+    "ci": "pnpm typecheck && pnpm test"
+  },
+  "dependencies": {
+    "ts-morph": "^24.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
