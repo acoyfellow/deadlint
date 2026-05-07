@@ -8,3 +8,7 @@ dist/
 coverage/
 .idea/
 .vscode/
+
+# Allow-list test fixtures: the "dist/" exclude tests our default-exclude
+# behavior, so the fixture file MUST be committed.
+!test/fixtures/**
