@@ -20,6 +20,13 @@ export type CloneFinding = {
 
 export type Finding = DeadRpcFinding | CloneFinding;
 
+/** Top-level options parsed from argv. */
+export type CliOptions = Omit<RunOptions, "tsconfigPath"> & {
+  /** One or more tsconfig.json files to scan. */
+  tsconfigPaths: string[];
+};
+
+/** Options for a single per-tsconfig run. */
 export type RunOptions = {
   rootPath: string;
   tsconfigPath: string;

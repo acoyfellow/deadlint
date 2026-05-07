@@ -70,7 +70,10 @@ npm i -g deadlint
 deadlint /path/to/your/repo
 ```
 
-The path needs a `tsconfig.json`. That's the only requirement.
+The path needs a `tsconfig.json` somewhere — at the root, in `apps/worker/`,
+or anywhere within the first 3 directory levels. Multi-package monorepos
+without a root config (a `packages/api/tsconfig.json` + `packages/web/tsconfig.json`
+layout) are auto-discovered and scanned per-project.
 
 ```bash
 deadlint ./repo                              # full scan (default)

@@ -1,5 +1,5 @@
 // CLI entry point. Parses args, dispatches to checks, prints report.
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync, type Dirent } from "node:fs";
 import { resolve, join, isAbsolute, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -7,7 +7,7 @@ import { findDeadRpcMethods } from "./dead-rpc.ts";
 import { findClonesSimilarity } from "./clones-similarity.ts";
 import { findClonesInline } from "./clones-inline.ts";
 import { renderReport } from "./report.ts";
-import type { Finding, RunOptions } from "./types.ts";
+import type { CliOptions, Finding, RunOptions } from "./types.ts";
 
 const DEFAULT_BASES = [
   "DurableObject",
@@ -46,13 +46,13 @@ const DEFAULT_EXCLUDE_DIRS = [
   "node_modules",
 ];
 
-function parseArgs(argv: string[]): RunOptions {
+function parseArgs(argv: string[]): CliOptions {
   const args = argv.slice(2);
   let rootPath: string | undefined;
   let tsconfigPath: string | undefined;
   let bases = new Set(DEFAULT_BASES);
   let checks = new Set<"dead-rpc" | "clones">(["dead-rpc", "clones"]);
-  let clonesEngine: RunOptions["clonesEngine"] = "similarity";
+  let clonesEngine: CliOptions["clonesEngine"] = "similarity";
   let cloneThreshold = 0.85;
   let cloneMinLines = 6;
   let excludeDirs = [...DEFAULT_EXCLUDE_DIRS];
@@ -73,7 +73,7 @@ function parseArgs(argv: string[]): RunOptions {
         break;
       }
       case "--clones-engine":
-        clonesEngine = args[++i] as RunOptions["clonesEngine"];
+        clonesEngine = args[++i] as CliOptions["clonesEngine"];
         break;
       case "--clone-threshold":
         cloneThreshold = Number(args[++i]);
@@ -122,26 +122,45 @@ function parseArgs(argv: string[]): RunOptions {
     process.exit(2);
   }
 
-  const resolvedTsconfig = tsconfigPath
-    ? isAbsolute(tsconfigPath)
+  // Resolve which tsconfig(s) to scan.
+  //
+  // - User-supplied --tsconfig: use it, exactly that one.
+  // - Otherwise look for the canonical roots (./tsconfig.json,
+  //   apps/worker/tsconfig.json, ./tsconfig.base.json). If found, use it.
+  // - Otherwise discover all tsconfig.json files within the project (depth
+  //   <= 3, skipping common build/cache dirs) and scan each. This covers
+  //   monorepos and multi-app repos that don't have a usable root config.
+  let tsconfigPaths: string[];
+  if (tsconfigPath) {
+    const resolved = isAbsolute(tsconfigPath)
       ? tsconfigPath
-      : resolve(process.cwd(), tsconfigPath)
-    : findTsconfig(absRoot);
-
-  if (!resolvedTsconfig || !existsSync(resolvedTsconfig)) {
-    console.error(
-      `deadlint: no tsconfig.json found at any of:\n` +
-        `  ${absRoot}/tsconfig.json\n` +
-        `  ${absRoot}/apps/worker/tsconfig.json\n` +
-        `  ${absRoot}/tsconfig.base.json\n` +
-        `Pass --tsconfig <path> to point at one explicitly.`,
-    );
-    process.exit(2);
+      : resolve(process.cwd(), tsconfigPath);
+    if (!existsSync(resolved)) {
+      console.error(`deadlint: --tsconfig file not found: ${resolved}`);
+      process.exit(2);
+    }
+    tsconfigPaths = [resolved];
+  } else {
+    const direct = findTsconfig(absRoot);
+    const all = findAllTsconfigs(absRoot);
+    if (direct && all[0] === direct) {
+      // Canonical root config found at depth 0/1; use only that one.
+      tsconfigPaths = [direct];
+    } else if (all.length > 0) {
+      // Multi-tsconfig project (monorepo / multi-app). Scan each.
+      tsconfigPaths = all;
+    } else {
+      console.error(
+        `deadlint: no tsconfig.json found under ${absRoot}.\n` +
+          `Pass --tsconfig <path> to point at one explicitly.`,
+      );
+      process.exit(2);
+    }
   }
 
   return {
     rootPath: absRoot,
-    tsconfigPath: resolvedTsconfig,
+    tsconfigPaths,
     bases,
     checks,
     clonesEngine,
@@ -153,13 +172,71 @@ function parseArgs(argv: string[]): RunOptions {
 }
 
 function findTsconfig(root: string): string | undefined {
-  // Try common monorepo spots.
-  const candidates = [
+  // Try common monorepo spots first.
+  const direct = [
     join(root, "tsconfig.json"),
     join(root, "apps", "worker", "tsconfig.json"),
     join(root, "tsconfig.base.json"),
   ];
-  return candidates.find(existsSync);
+  const hit = direct.find(existsSync);
+  if (hit) return hit;
+
+  // Fall back: any tsconfig found by walking 2 levels deep, picking the
+  // first one encountered. This handles monorepos with non-standard
+  // layouts (web/, api/, packages/*/) when the user didn't pass --tsconfig
+  // and didn't pin a root tsconfig. For multi-tsconfig repos, use
+  // findAllTsconfigs() to discover them all.
+  const all = findAllTsconfigs(root);
+  return all[0];
+}
+
+/**
+ * Walk `root` to a maximum depth of 3 directories, collecting every
+ * tsconfig.json (excluding common build/cache dirs). Returns absolute paths,
+ * sorted by directory depth (shallowest first) so well-named root configs
+ * win when only one is needed.
+ */
+function findAllTsconfigs(root: string): string[] {
+  const SKIP = new Set([
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    ".svelte-kit",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".alchemy",
+    ".wrangler",
+    ".cache",
+    ".vercel",
+    ".astro",
+    "coverage",
+    "out",
+  ]);
+  const found: { path: string; depth: number }[] = [];
+  const visit = (dir: string, depth: number) => {
+    if (depth > 3) return;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isFile() && entry.name === "tsconfig.json") {
+        found.push({ path: full, depth });
+        continue;
+      }
+      if (entry.isDirectory() && !SKIP.has(entry.name)) {
+        visit(full, depth + 1);
+      }
+    }
+  };
+  visit(root, 0);
+  found.sort((a, b) => a.depth - b.depth || a.path.localeCompare(b.path));
+  return found.map((f) => f.path);
 }
 
 /**
@@ -268,32 +345,73 @@ DOCS
 }
 
 async function main() {
-  const opts = parseArgs(process.argv);
-  const findings: Finding[] = [];
+  const cli = parseArgs(process.argv);
+  const allFindings: Finding[] = [];
 
-  if (opts.checks.has("dead-rpc")) {
-    if (!opts.json) console.error("→ dead-rpc check…");
-    findings.push(...(await findDeadRpcMethods(opts)));
+  // Run each check once per discovered tsconfig. Same `RunOptions` shape
+  // per project so the check functions don't need to know about multi-
+  // project orchestration.
+  for (const tsconfigPath of cli.tsconfigPaths) {
+    const opts: RunOptions = { ...cli, tsconfigPath };
+    if (!opts.json && cli.tsconfigPaths.length > 1) {
+      console.error(`→ project: ${tsconfigPath}`);
+    }
+
+    if (opts.checks.has("dead-rpc")) {
+      if (!opts.json) console.error("→ dead-rpc check…");
+      allFindings.push(...(await findDeadRpcMethods(opts)));
+    }
+
+    if (opts.checks.has("clones")) {
+      if (opts.clonesEngine === "similarity" || opts.clonesEngine === "both") {
+        if (!opts.json) console.error("→ clones (similarity-ts)…");
+        allFindings.push(...(await findClonesSimilarity(opts)));
+      }
+      if (opts.clonesEngine === "inline" || opts.clonesEngine === "both") {
+        if (!opts.json) console.error("→ clones (inline ts-morph)…");
+        allFindings.push(...(await findClonesInline(opts)));
+      }
+    }
   }
 
-  if (opts.checks.has("clones")) {
-    if (opts.clonesEngine === "similarity" || opts.clonesEngine === "both") {
-      if (!opts.json) console.error("→ clones (similarity-ts)…");
-      findings.push(...(await findClonesSimilarity(opts)));
-    }
-    if (opts.clonesEngine === "inline" || opts.clonesEngine === "both") {
-      if (!opts.json) console.error("→ clones (inline ts-morph)…");
-      findings.push(...(await findClonesInline(opts)));
-    }
-  }
+  // Deduplicate findings that the same multi-tsconfig run reported twice
+  // (e.g. a clone pair where both files belong to two different sub-
+  // projects, or a dead method whose class is included in both).
+  const findings = dedupeFindings(allFindings);
 
-  if (opts.json) {
+  // Reporter wants something with rootPath and json — use the CLI shape.
+  const reportOpts: RunOptions = {
+    ...cli,
+    tsconfigPath: cli.tsconfigPaths[0] ?? "",
+  };
+  if (cli.json) {
     process.stdout.write(JSON.stringify({ findings }, null, 2) + "\n");
   } else {
-    process.stdout.write(renderReport(findings, opts) + "\n");
+    process.stdout.write(renderReport(findings, reportOpts) + "\n");
   }
 
   process.exit(findings.length > 0 ? 1 : 0);
+}
+
+/**
+ * Multi-tsconfig runs can report the same finding twice when files are
+ * part of multiple project-references. Build a stable key per finding
+ * and keep only the first occurrence.
+ */
+function dedupeFindings(findings: Finding[]): Finding[] {
+  const seen = new Set<string>();
+  const out: Finding[] = [];
+  for (const f of findings) {
+    const key =
+      f.kind === "dead-rpc"
+        ? `dead:${f.file}:${f.line}:${f.className}.${f.methodName}`
+        : `clone:${f.engine}:` +
+          [`${f.a.file}:${f.a.line}`, `${f.b.file}:${f.b.line}`].sort().join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(f);
+  }
+  return out;
 }
 
 main().catch((err) => {

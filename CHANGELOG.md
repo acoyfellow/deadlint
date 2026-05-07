@@ -22,6 +22,11 @@
   `.astro`, `node_modules`) applied to all three signals — including
   pass-through to `similarity-ts` via repeated `--exclude` flags.
   Configurable with `--exclude` (replace) and `--also-exclude` (extend).
+- Multi-tsconfig auto-discovery: when no canonical root `tsconfig.json`
+  is found, deadlint walks the project (depth ≤ 3, skipping common cache
+  dirs) for any tsconfig.json files and scans each as a separate project.
+  Findings are deduplicated across projects. Single-tsconfig repos
+  behave exactly as before.
 - Global git pre-push hook installer: `--install-hook`, `--uninstall-hook`,
   `--hook-status`.
 - CLI flags: `--check`, `--bases`, `--tsconfig`, `--clones-engine`,

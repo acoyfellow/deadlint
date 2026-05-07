@@ -213,6 +213,27 @@ test("clones (inline): default exclude list filters dist/", () => {
   }
 });
 
+// ── multi-tsconfig discovery (monorepo) ──────────────────────────────────
+
+test("multi-tsconfig: scans every package when no root tsconfig exists", () => {
+  const monorepo = resolve(here, "fixtures", "multi-pkg");
+  const r = spawnSync(tsx, [cli, monorepo, "--json", "--check", "dead-rpc"], {
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  assert.ok(
+    r.status === 0 || r.status === 1,
+    `unexpected exit ${r.status}: ${r.stderr}`,
+  );
+  const parsed = JSON.parse(r.stdout) as { findings: Finding[] };
+  const dead = parsed.findings.filter((f): f is DeadFinding => f.kind === "dead-rpc");
+  const names = new Set(dead.map((d) => `${d.className}.${d.methodName}`));
+  assert.ok(
+    names.has("ApiDO.deadOnApi"),
+    `should find ApiDO.deadOnApi in packages/api; got: ${[...names].join(", ")}`,
+  );
+});
+
 test("clones (inline): --exclude with no 'dist' surfaces dist clones", () => {
   // Override the default exclude list to NOT include dist. Now the fixture's
   // dist/built.ts is a near-perfect copy of src/clones.ts so we should see
