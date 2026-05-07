@@ -152,10 +152,13 @@ isn't deadlint-managed. You can't accidentally lose work.
   router class to `--bases` if appropriate.
 - Behavioral clones with different control flow. The inline engine is
   shape-based; the similarity engine helps but isn't magic.
-- The `similarity` clone engine is an external Rust binary
-  (`similarity-ts`) that does its own file walk and does not read your
-  `tsconfig.json`. The `inline` engine and the dead-rpc check both
-  honor `tsconfig` includes/excludes.
+
+Build-output directories (`dist`, `build`, `.svelte-kit`, `.next`, etc.)
+are excluded by default — they generate ~100% clone matches against the
+source they were built from. Pass `--exclude` to replace the list, or
+`--also-exclude` to extend it. Note: `lib` is **not** in the default
+list because SvelteKit and many other frameworks use `src/lib/` for
+source code; pass `--also-exclude lib` if your project emits to it.
 
 Findings are meant for human review. The tool biases toward false
 negatives — it would rather miss a dead method than wrongly flag a live one.

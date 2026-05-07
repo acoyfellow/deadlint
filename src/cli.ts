@@ -17,6 +17,35 @@ const DEFAULT_BASES = [
   "Agent",
 ];
 
+// Directories typically containing build output or framework-generated
+// artifacts. We exclude them by default from every scan because they
+// produce ~100% clone matches against the source they were built from.
+// Override with --exclude (replaces) or extend with --also-exclude (adds).
+//
+// Deliberately NOT in this list:
+//   - `lib` — used for source code in SvelteKit (`src/lib/...`) and many
+//     other frameworks. Way more common as source than as build output.
+//     Projects that emit to `lib/` (e.g. alchemy-style outDir) can pass
+//     `--also-exclude lib`.
+//   - `target` — Cargo's, but rarely under a TS project root.
+//   - `output` — too generic.
+const DEFAULT_EXCLUDE_DIRS = [
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  ".svelte-kit",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".alchemy",
+  ".wrangler",
+  ".cache",
+  ".vercel",
+  ".astro",
+  "node_modules",
+];
+
 function parseArgs(argv: string[]): RunOptions {
   const args = argv.slice(2);
   let rootPath: string | undefined;
@@ -26,6 +55,7 @@ function parseArgs(argv: string[]): RunOptions {
   let clonesEngine: RunOptions["clonesEngine"] = "similarity";
   let cloneThreshold = 0.85;
   let cloneMinLines = 6;
+  let excludeDirs = [...DEFAULT_EXCLUDE_DIRS];
   let json = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -51,6 +81,14 @@ function parseArgs(argv: string[]): RunOptions {
       case "--clone-min-lines":
         cloneMinLines = Number(args[++i]);
         break;
+      case "--exclude":
+        excludeDirs = args[++i]!.split(",").map((s) => s.trim()).filter(Boolean);
+        break;
+      case "--also-exclude": {
+        const more = args[++i]!.split(",").map((s) => s.trim()).filter(Boolean);
+        excludeDirs.push(...more);
+        break;
+      }
       case "--json":
         json = true;
         break;
@@ -109,6 +147,7 @@ function parseArgs(argv: string[]): RunOptions {
     clonesEngine,
     cloneThreshold,
     cloneMinLines,
+    excludeDirs: [...new Set(excludeDirs)],
     json,
   };
 }
@@ -196,6 +235,12 @@ OPTIONS
                               (default: 0.85)
   --clone-min-lines <n>       Min function body lines to compare
                               (default: 6)
+  --exclude <a,b,c>           Replace the default exclude-dirs list
+                              (default: dist, build, out, coverage,
+                              .svelte-kit, .next, .nuxt, .turbo, .alchemy,
+                              .wrangler, .cache, .vercel, .astro,
+                              node_modules)
+  --also-exclude <a,b,c>      Add to the default exclude-dirs list
   --json                      Emit machine-readable JSON instead of text
   -h, --help                  This message
 

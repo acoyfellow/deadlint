@@ -8,6 +8,6 @@
     "noEmit": true,
     "types": []
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "include": ["src/**/*.ts", "test/**/*.ts", "dist/**/*.ts"],
   "exclude": ["archive/**", "node_modules"]
 }

@@ -37,29 +37,21 @@ import type { DeadRpcFinding, RunOptions } from "./types.ts";
 // token-grep pass only (Pattern A and Pattern B). We don't try to parse them.
 const COMPANION_EXTENSIONS = [".svelte", ".vue", ".astro", ".tsx", ".jsx", ".mts", ".cts"];
 
-// Directories we never descend into when collecting companion files. The
-// tsconfig handles TypeScript exclusion; this is a separate concern (we're
-// reading raw text from non-TS files).
-const COMPANION_SKIP_DIRS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  ".svelte-kit",
-  ".next",
-  ".nuxt",
-  ".turbo",
-  ".wrangler",
-  "coverage",
-  ".cache",
-]);
+// Always-skip dirs the user can't override — these are filesystem hazards
+// (.git internals, node_modules) where descending wastes time and produces
+// nothing useful. The user-configurable exclude list is layered on top.
+const ALWAYS_SKIP_DIRS = new Set(["node_modules", ".git"]);
 
 /**
  * Recursively collect companion (non-TS) source files under root that may
- * reference TypeScript-defined methods via string-key dispatch. Returns
- * absolute paths.
+ * reference TypeScript-defined methods via string-key dispatch.
+ *
+ * @param root absolute path to start walking
+ * @param userExcludeDirs additional directory names to skip (build outputs,
+ *   framework caches). Combined with ALWAYS_SKIP_DIRS.
  */
-function collectCompanionFiles(root: string): string[] {
+function collectCompanionFiles(root: string, userExcludeDirs: string[]): string[] {
+  const skip = new Set([...ALWAYS_SKIP_DIRS, ...userExcludeDirs]);
   const out: string[] = [];
   const visit = (dir: string) => {
     let entries: import("node:fs").Dirent[];
@@ -69,16 +61,8 @@ function collectCompanionFiles(root: string): string[] {
       return;
     }
     for (const entry of entries) {
-      if (entry.name.startsWith(".") && entry.name !== "." && entry.name !== "..") {
-        // Skip dot-files and dot-dirs except the ones we explicitly allow
-        // through (none currently). Avoids .git, .next, etc.
-        if (!COMPANION_SKIP_DIRS.has(entry.name)) {
-          // still check the explicit list above for non-dot dirs
-          if (entry.isDirectory() && entry.name.startsWith(".")) continue;
-        }
-      }
       if (entry.isDirectory()) {
-        if (COMPANION_SKIP_DIRS.has(entry.name)) continue;
+        if (skip.has(entry.name)) continue;
         visit(join(dir, entry.name));
         continue;
       }
@@ -245,10 +229,19 @@ export async function findDeadRpcMethods(opts: RunOptions): Promise<DeadRpcFindi
   };
   const candidates: Candidate[] = [];
 
+  // Build-output directories (dist/, .svelte-kit/, etc.) frequently get
+  // pulled into a tsconfig project even when they shouldn't be — usually
+  // because a path mapping or `composite` reference reaches them. We
+  // filter using the same exclude list we forward to similarity-ts so the
+  // three engines stay consistent.
+  const isExcluded = (file: string): boolean =>
+    opts.excludeDirs.some((dir) => file.includes(`/${dir}/`));
+
   for (const sourceFile of project.getSourceFiles()) {
     const filePath = sourceFile.getFilePath();
     if (!filePath.startsWith(opts.rootPath)) continue;
     if (filePath.endsWith(".d.ts")) continue;
+    if (isExcluded(filePath)) continue;
 
     for (const cls of sourceFile.getClasses()) {
       const base = getBaseClassName(cls);
@@ -327,6 +320,7 @@ export async function findDeadRpcMethods(opts: RunOptions): Promise<DeadRpcFindi
       const file = sf.getFilePath();
       if (!file.startsWith(opts.rootPath)) continue;
       if (file.endsWith(".d.ts")) continue;
+      if (isExcluded(file)) continue;
       scanText(sf.getFullText());
     }
 
@@ -334,7 +328,7 @@ export async function findDeadRpcMethods(opts: RunOptions): Promise<DeadRpcFindi
     // Frontend code commonly invokes Workers RPC methods from these files
     // via `client.call("methodName", args)` — we'd flag every such method
     // as dead without this. Read as text only; we do not try to parse them.
-    for (const file of collectCompanionFiles(opts.rootPath)) {
+    for (const file of collectCompanionFiles(opts.rootPath, opts.excludeDirs)) {
       try {
         scanText(readFileSync(file, "utf8"));
       } catch {

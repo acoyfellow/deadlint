@@ -90,10 +90,17 @@ function collectBodies(opts: RunOptions): BodyEntry[] {
 
   const entries: BodyEntry[] = [];
 
+  // Some project setups include build output (e.g. emit-to-source repos that
+  // ship `dist/` next to `src/` and have it on the tsconfig path). Filter
+  // those out using the same exclude list we pass to similarity-ts.
+  const isExcluded = (file: string): boolean =>
+    opts.excludeDirs.some((dir) => file.includes(`/${dir}/`));
+
   for (const sf of project.getSourceFiles()) {
     const file = sf.getFilePath();
     if (!file.startsWith(opts.rootPath)) continue;
     if (file.endsWith(".d.ts")) continue;
+    if (isExcluded(file)) continue;
 
     sf.forEachDescendant((node) => {
       let body: Node | undefined;

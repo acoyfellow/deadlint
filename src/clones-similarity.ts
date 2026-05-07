@@ -76,6 +76,15 @@ export async function findClonesSimilarity(opts: RunOptions): Promise<CloneFindi
     String(opts.cloneMinLines),
   ];
 
+  // Forward our exclude-dirs list. similarity-ts's --exclude takes a single
+  // pattern per occurrence, so we emit one --exclude per directory. Users
+  // who run similarity-ts directly do this manually; deadlint just defaults
+  // to the obvious ones (dist/, build/, .svelte-kit/, etc.) so committed
+  // build output doesn't drown out real findings.
+  for (const dir of opts.excludeDirs) {
+    args.push("--exclude", dir);
+  }
+
   const result = tryRun(bin, args);
   if (!result.ok && !result.stdout) {
     console.error(`WARN: similarity-ts failed (exit ${result.code}): ${result.stderr.trim()}`);

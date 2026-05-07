@@ -190,6 +190,53 @@ test("dead-rpc: does not scan files excluded by tsconfig", () => {
   }
 });
 
+// ── default exclude-dirs list (dist/, build/, .svelte-kit/, ...) ──────────
+
+test("clones (inline): default exclude list filters dist/", () => {
+  // The fixture's tsconfig DOES include dist/**/*.ts, but deadlint's
+  // default --exclude list includes 'dist', so we should not get a clone
+  // pair touching the dist/ tree.
+  const { findings } = runDeadlint([
+    "--check",
+    "clones",
+    "--clones-engine",
+    "inline",
+    "--clone-min-lines",
+    "5",
+  ]);
+  const clones = findings.filter((f): f is CloneFinding => f.kind === "clone");
+  for (const c of clones) {
+    assert.ok(
+      !c.a.file.includes("/dist/") && !c.b.file.includes("/dist/"),
+      `clone references /dist/ file (in default exclude list): ${c.a.file} / ${c.b.file}`,
+    );
+  }
+});
+
+test("clones (inline): --exclude with no 'dist' surfaces dist clones", () => {
+  // Override the default exclude list to NOT include dist. Now the fixture's
+  // dist/built.ts is a near-perfect copy of src/clones.ts so we should see
+  // a finding pointing at it.
+  const { findings } = runDeadlint([
+    "--check",
+    "clones",
+    "--clones-engine",
+    "inline",
+    "--clone-min-lines",
+    "5",
+    "--exclude",
+    "node_modules,.git",
+  ]);
+  const clones = findings.filter((f): f is CloneFinding => f.kind === "clone");
+  const distClones = clones.filter(
+    (c) => c.a.file.includes("/dist/") || c.b.file.includes("/dist/"),
+  );
+  assert.ok(
+    distClones.length > 0,
+    "with dist/ off the exclude list, we should surface its clones — none found",
+  );
+});
+
 // ── similarity engine (only if installed; otherwise just verify graceful skip) ──
 
 test("clones (similarity): runs cleanly whether or not similarity-ts is installed", () => {
